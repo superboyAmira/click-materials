@@ -1,0 +1,30 @@
+---
+tags:
+  - db
+  - clickhouse
+---
+
+**CollapsingMergeTree** позволяет хранить _лог изменений_, в котором некоторые записи помечены как отмена для других, и при объединении такие пары **схлопываются** (удаляются друг с другом). Типичный кейс – журнал состояний с записью отмен (undo/redo). В таблице с этим движком должно быть специальное целочисленное поле `Sign` (значения +1 и -1) ([CollapsingMergeTree | ClickHouse Docs](https://clickhouse.com/docs/ru/engines/table-engines/mergetree-family/collapsingmergetree#:~:text=%D0%94%D0%B2%D0%B8%D0%B3%D0%B0%D1%82%D0%B5%D0%BB%D1%8C%20,%D1%81%D0%BE%D1%85%D1%80%D0%B0%D0%BD%D1%8F%D1%8E%D1%82%D1%81%D1%8F)) ([CollapsingMergeTree | ClickHouse Docs](https://clickhouse.com/docs/ru/engines/table-engines/mergetree-family/collapsingmergetree#:~:text=,%D0%A2%D0%B8%D0%BF%3A%20Int8)). При слиянии, если встречаются две одинаковые по ключу строки, одна из которых имеет `Sign = 1` (прямая запись состояния), а другая `Sign = -1` (отмена этого состояния), то обе удаляются (взаимно погашаются) ([CollapsingMergeTree | ClickHouse Docs](https://clickhouse.com/docs/ru/engines/table-engines/mergetree-family/collapsingmergetree#:~:text=%D0%94%D0%B2%D0%B8%D0%B3%D0%B0%D1%82%D0%B5%D0%BB%D1%8C%20,%D1%81%D0%BE%D1%85%D1%80%D0%B0%D0%BD%D1%8F%D1%8E%D1%82%D1%81%D1%8F)). Строки, не имеющие пары, остаются в данных (например, последний актуальный статус).
+
+Особенности CollapsingMergeTree:
+- **Назначение `Sign`:** Разработчик сам определяет логику, что считать добавлением (`Sign=1`) и удалением (`Sign=-1`). Обычно `Sign=1` обозначает актуальную запись состояния, а `Sign=-1` – отмена (удаление) этой записи или переход в новое состояние. Все поля ключа сортировки у записи отмены должны совпадать с полями у записи-состояния, чтобы они образовали пару ([CollapsingMergeTree | ClickHouse Docs](https://clickhouse.com/docs/ru/engines/table-engines/mergetree-family/collapsingmergetree#:~:text=%D0%94%D0%B2%D0%B8%D0%B3%D0%B0%D1%82%D0%B5%D0%BB%D1%8C%20,%D1%81%D0%BE%D1%85%D1%80%D0%B0%D0%BD%D1%8F%D1%8E%D1%82%D1%81%D1%8F)) ([CollapsingMergeTree | ClickHouse Docs](https://clickhouse.com/docs/ru/engines/table-engines/mergetree-family/collapsingmergetree#:~:text=,%D0%BE%D0%B1%D1%8A%D0%B5%D0%BA%D1%82%D0%B0%20%D1%81%20%D1%82%D0%B5%D0%BC%D0%B8%20%D0%B6%D0%B5%20%D0%B0%D1%82%D1%80%D0%B8%D0%B1%D1%83%D1%82%D0%B0%D0%BC%D0%B8)).
+- **Схлопывание пар при мердже:** Алгоритм движка: при объединении он асинхронно находит пары строк с противоположными знаками и одинаковым ключом и убирает их из результирующей части ([CollapsingMergeTree | ClickHouse Docs](https://clickhouse.com/docs/ru/engines/table-engines/mergetree-family/collapsingmergetree#:~:text=%D0%94%D0%B2%D0%B8%D0%B3%D0%B0%D1%82%D0%B5%D0%BB%D1%8C%20,%D1%81%D0%BE%D1%85%D1%80%D0%B0%D0%BD%D1%8F%D1%8E%D1%82%D1%81%D1%8F)). Если для какой-то строки отмены не нашлось соответствующей строки состояния , то эта одиночная запись сохраняется ([CollapsingMergeTree | ClickHouse Docs](https://clickhouse.com/docs/ru/engines/table-engines/mergetree-family/collapsingmergetree#:~:text=%D0%B0%D1%81%D0%B8%D0%BD%D1%85%D1%80%D0%BE%D0%BD%D0%BD%D0%BE%20%D1%83%D0%B4%D0%B0%D0%BB%D1%8F%D0%B5%D1%82%20,%D1%81%D0%BE%D1%85%D1%80%D0%B0%D0%BD%D1%8F%D1%8E%D1%82%D1%81%D1%8F)). Таким образом, после полного схлопывания остаются только непогашенные состояния – например, актуальные записи, которым не пришла отмена.
+- **История изменений:** Движок **не сохраняет историю** погашенных состояний – они именно удаляются при слияниях ([CollapsingMergeTree | ClickHouse Docs](https://clickhouse.com/docs/ru/engines/table-engines/mergetree-family/collapsingmergetree#:~:text=match%20at%20L363%20,%D1%81%D0%BE%D1%85%D1%80%D0%B0%D0%BD%D1%8F%D0%B5%D1%82%20%D0%B8%D1%81%D1%82%D0%BE%D1%80%D0%B8%D1%8E%20%D1%81%D0%B6%D0%B0%D1%82%D1%8B%D1%85%20%D1%81%D0%BE%D1%81%D1%82%D0%BE%D1%8F%D0%BD%D0%B8%D0%B9)). Если нужна история, лучше использовать версионный вариант либо хранить в другой форме. Зато CollapsingMergeTree значительно экономит место за счет удаления отмененных записей ([CollapsingMergeTree | ClickHouse Docs](https://clickhouse.com/docs/ru/engines/table-engines/mergetree-family/collapsingmergetree#:~:text=%D0%BF%D1%80%D0%B8%D0%BC%D0%B5%D1%87%D0%B0%D0%BD%D0%B8%D0%B5)).
+- **Применение:** Например, лог транзакций: каждая транзакция состоит из записи начала (`Sign=1`) и записи отката (`Sign=-1`) при отмене. В итоге откатанные транзакции исчезают из журнала. Другой пример – система учета: приходит новая версия объекта (`Sign=1`), а старая помечается удаленной (`Sign=-1`); в итоге в таблице останется только текущая версия.
+
+Создание CollapsingMergeTree требует указать имя колонки для `Sign`:
+
+```sql
+CREATE TABLE account_log (
+    AccountID UInt64,
+    EventType String,
+    Amount Float64,
+    Sign Int8
+)
+ENGINE = CollapsingMergeTree(Sign)
+ORDER BY (AccountID, EventType);
+```
+
+ CollapsingMergeTree _асинхронно удаляет (сжимает)_ пары строк, у которых все поля ключа совпадают, кроме `Sign`, равного +1 и -1 ([CollapsingMergeTree | ClickHouse Docs](https://clickhouse.com/docs/ru/engines/table-engines/mergetree-family/collapsingmergetree#:~:text=%D0%94%D0%B2%D0%B8%D0%B3%D0%B0%D1%82%D0%B5%D0%BB%D1%8C%20,%D1%81%D0%BE%D1%85%D1%80%D0%B0%D0%BD%D1%8F%D1%8E%D1%82%D1%81%D1%8F)). Строки без пары остаются в данных. Этот механизм может существенно уменьшить объем хранения и ускорить запросы, избавляя от отмененных данных ([CollapsingMergeTree | ClickHouse Docs](https://clickhouse.com/docs/ru/engines/table-engines/mergetree-family/collapsingmergetree#:~:text=%D0%BF%D1%80%D0%B8%D0%BC%D0%B5%D1%87%D0%B0%D0%BD%D0%B8%D0%B5)).
+### VersionedCollapsingMergeTree 
+**VersionedCollapsingMergeTree** расширяет CollapsingMergeTree, добавляя учет _версии_ изменений. Помимо `Sign`, в таблице есть еще столбец `Version` (UInt/DateTime). При схлопывании пар с `Sign=+1`/`-1` движок учитывает версию: если есть несколько состояний, он оставит то, у которого максимальная версия. Короче, это движок для схлопывания отмен с возможностью последовательных обновлений.
